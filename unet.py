@@ -15,7 +15,7 @@ class UNet(tf.keras.Model):
         Tensorflow keras model object. 
     """
 
-    def __init__(self, n_filters=32, n_classes=10):
+    def __init__(self, n_filters=32, n_classes=1):
         super(UNet, self).__init__()
         self.conv = DoubleConvolution(n_filters)
         self.dblock1 = DownConvolve(n_filters * 2)
