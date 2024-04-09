@@ -1,84 +1,122 @@
-
 import tensorflow as tf
-from tensorflow.keras.layers import Input, Conv2D, MaxPooling2D, Conv2DTranspose
+from tensorflow.keras import Sequential
+from tensorflow.keras.layers import Conv2D, MaxPooling2D, Conv2DTranspose
 from tensorflow.keras.layers import Dropout, BatchNormalization, ReLU, concatenate
 
+    
+class UNet(tf.keras.Model):
+    """
+    UNet semantic segmentation architecture.
 
-class UNet():
-    def __init__(self, input_size=(224, 224, 3), n_filters=32, n_classes=10):
-        self.input_size = input_size
-        self.n_filters = n_filters
-        self.n_classes = n_classes
-        self.model = self.build()
+    Arguments:
+        n_filters: Initial number of filters. Following ones will be multiplied by two ([32, 64, 128, ...]).
+        n_classes: Number of output classes. 
+    Returns:
+        Tensorflow keras model object. 
+    """
 
-    def encoder_block(self, inputs, n_filters, dropout=0, max_pooling=True):
-        c = Conv2D(
-            filters=n_filters, 
-            kernel_size=(3, 3), 
-            activation='relu', 
+    def __init__(self, n_filters=32, n_classes=10):
+        super(UNet, self).__init__()
+        self.conv = DoubleConvolution(n_filters)
+        self.dblock1 = DownConvolve(n_filters * 2)
+        self.dblock2 = DownConvolve(n_filters * 4)
+        self.dblock3 = DownConvolve(n_filters * 8)
+        self.dblock4 = DownConvolve(n_filters * 16)
+
+        self.ublock4 = UpConvolve(n_filters * 8)
+        self.ublock3 = UpConvolve(n_filters * 4)
+        self.ublock2 = UpConvolve(n_filters * 2)
+        self.ublock1 = UpConvolve(n_filters)
+
+        self.outputs = Conv2D(
+            n_classes, 
+            kernel_size=(1, 1), 
             padding='same', 
-            kernel_initializer='he_normal')(inputs)
-        c = Conv2D(
-            filters=n_filters,
-            kernel_size=(3, 3),
-            padding='same',
-            kernel_initializer='he_normal')(c)
-        c = BatchNormalization()(c)
-        c = ReLU()(c)
+            activation='softmax' if n_classes > 1 else 'sigmoid'
+        )
+
+    def call(self, inputs):
+        s1 = self.conv(inputs)
+        s2 = self.dblock1(s1)
+        s3 = self.dblock2(s2)
+        s4 = self.dblock3(s3)
+        s5 = self.dblock4(s4)
+        x = self.ublock4(s5, s4)
+        x = self.ublock3(x, s3)
+        x = self.ublock2(x, s2)
+        x = self.ublock1(x, s1)
+        
+        return self.outputs(x)
+
+class DoubleConvolution(tf.keras.layers.Layer):
+    """
+    Sequential two CNN layer operation.
+
+    Arguments:
+        n_filters: Number of output filters.
+        dropout: Dropout ratio. Default is 0 meaning that don't add dropout.
+    Returns:
+        Tensorflow keras sequential object with two CNN layer.
+    """
+    def __init__(self, n_filters, dropout=0):
+        super(DoubleConvolution, self).__init__()
+        self.conv_block = Sequential(
+            [
+                Conv2D(filters=n_filters, kernel_size=(3, 3), padding='same', kernel_initializer='he_normal'),
+                BatchNormalization(),
+                ReLU(),
+                Conv2D(filters=n_filters, kernel_size=(3, 3), padding='same', kernel_initializer='he_normal'),
+                BatchNormalization(),
+                ReLU()
+            ]
+        )
 
         if dropout > 0:
-            c = Dropout(dropout)(c)
-        
-        if max_pooling:
-            output = MaxPooling2D(pool_size=(2, 2))(c)
-        else:
-            output = c
-        skip_connection = c
+            self.conv_block.add(Dropout(dropout))
 
-        return output, skip_connection
-
-    def decoder_block(self, inputs, skip_connections, n_filters):
-        u = Conv2DTranspose(
-            filters=n_filters,
-            kernel_size=(3, 3),
-            strides=(2, 2),
-            padding='same')(inputs)
-        merge = concatenate([u, skip_connections], axis=-1)
-        c = Conv2D(
-            filters=n_filters, 
-            kernel_size=(3, 3), 
-            padding='same', 
-            kernel_initializer='he_normal')(merge)
-        c = Conv2D(filters=n_filters, kernel_size=(3, 3), activation='relu', padding='same', kernel_initializer='he_normal')(c)
-        c = BatchNormalization()(c)
-        c = ReLU()(c)
-
-        return c
-
-    def build(self):
-        inputs = Input(self.input_size)
-
-        cblock1, skip1 = self.encoder_block(inputs, self.n_filters)
-        cblock2, skip2 = self.encoder_block(cblock1, self.n_filters * 2)
-        cblock3, skip3 = self.encoder_block(cblock2, self.n_filters * 4)
-        cblock4, skip4 = self.encoder_block(cblock3, self.n_filters * 8, dropout=0.3)
-        
-        bottleneck, _ = self.encoder_block(cblock4, self.n_filters * 16, dropout=0.3, max_pooling=False)
-
-        ublock4 = self.decoder_block(bottleneck, skip4, self.n_filters * 8)
-        ublock3 = self.decoder_block(ublock4, skip3, self.n_filters * 4)
-        ublock2 = self.decoder_block(ublock3, skip2, self.n_filters * 2)
-        ublock1 = self.decoder_block(ublock2, skip1, self.n_filters)
-
-        conv = Conv2D(
-            filters=self.n_filters, 
-            kernel_size=(3, 3), 
-            activation='relu', 
-            padding='same', 
-            kernel_initializer='he_normal')(ublock1)
-        
-        outputs = Conv2D(self.n_classes, kernel_size=(1, 1), padding='same')(conv)
-        model = tf.keras.Model(inputs=inputs, outputs=outputs)
-
-        return model
+    def __call__(self, inputs):
+        return self.conv_block(inputs)
     
+class DownConvolve(tf.keras.layers.Layer):
+    """
+    Applying max pooling following double CNN operation to reduce feature map's size.
+    
+    Arguments:
+        n_filters: Number of output filters.
+        dropout: Dropout ratio. Default is 0 meaning that don't add dropout.
+    Returns:
+        Tensorflow keras sequential object with one max pooling and two CNN operation.
+    """
+
+    def __init__(self, n_filters, dropout=0):
+        super(DownConvolve, self).__init__()
+        self.dblock = Sequential(
+            [   MaxPooling2D(pool_size=(2, 2)),
+                DoubleConvolution(n_filters, dropout)
+            ]
+        )
+
+    def call(self, inputs):
+        return self.dblock(inputs)
+
+class UpConvolve(tf.keras.layers.Layer):
+    """
+    Upscaling feature map with transpose convolution operation and concatenating skip connections with the output.
+
+    Arguments:
+        n_filters: Number of output filters.
+        dropout: Dropout ratio. Default is 0 meaning that don't add dropout.
+    Returns:
+        Tensorflow keras sequential object with one transpose convolution and two convolution operation on combination of the output and skip connections.
+    """
+    
+    def __init__(self, n_filters, dropout=0):
+        super(UpConvolve, self).__init__()
+        self.up = Conv2DTranspose(filters=n_filters, kernel_size=(3, 3), strides=(2, 2), padding='same')
+        self.conv = DoubleConvolution(n_filters, dropout)
+
+    def call(self, inputs, skip_connections):
+        u = self.up(inputs)
+        merge = concatenate([u, skip_connections], axis=-1)
+        return self.conv(merge)
+
